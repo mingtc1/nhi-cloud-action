@@ -1,4 +1,4 @@
-name: Daily NHI Drug Data Process and R2 Upload
+name: Daily NHI Drug Data Process and Upload
 
 # Trigger the workflow:
 # 1. Automatically via schedule (6:00 AM UTC everyday, which is 2:00 PM Taiwan time)
@@ -37,3 +37,10 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: python upload_r2.py
+
+      - name: Upload to Cloudflare D1
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+        run: python upload_d1.py --csv cleaned_nhi_data_no_zero.csv
