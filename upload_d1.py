@@ -49,13 +49,26 @@ def d1_query(sql_statements):
     }
 
     payload = sql_statements if isinstance(sql_statements, list) else [sql_statements]
+    
+    # Remove empty params to avoid strict validation errors
+    for item in payload:
+        if "params" in item and not item["params"]:
+            del item["params"]
+
+    print(f"  [API] Sending {len(payload)} statements to D1...")
     resp = requests.post(url, headers=headers, json=payload, timeout=120)
-    resp.raise_for_status()
+    
+    if resp.status_code != 200:
+        print(f"\n[D1 API ERROR] HTTP {resp.status_code}")
+        print(f"[D1 API ERROR BODY] {resp.text}\n")
+        resp.raise_for_status()
 
     data = resp.json()
     if not data.get("success"):
         errors = data.get("errors", [])
+        print(f"\n[D1 API ERROR JSON] {errors}\n")
         raise RuntimeError(f"D1 API error: {errors}")
+        
     return data
 
 
