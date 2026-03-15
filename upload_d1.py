@@ -70,37 +70,37 @@ def execute_wrangler(sql_path):
     """Run `npx wrangler d1 execute <uuid> --remote --file=<path>` to push changes."""
     print(f"  [2/2] Rebuilding D1 database using Wrangler CLI...")
     
-    env = os.environ.copy()
-    # Wrangler CLI reads these natively:
-    # CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+    # We must generate a temporary wrangler.toml for wrangler to resolve the DB 
+    toml_content = f"""
+name = "nhi-cloud-action"
+compatibility_date = "2024-03-14"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nhi-drugs"
+database_id = "{DATABASE_ID}"
+"""
+    with open("wrangler.toml", "w", encoding="utf-8") as f:
+        f.write(toml_content)
     
+    env = os.environ.copy()
+    
+    # Notice we pass the *database_name* "nhi-drugs" mapped in the TOML,
+    # because Wrangler CLI resolves it via wrangler.toml -> database_id
     cmd = [
         "npx", "wrangler@latest", "d1", "execute", 
-        DATABASE_ID, 
+        "nhi-drugs", 
         "--remote", 
         f"--file={sql_path}"
     ]
     
     print(f"     Running: {' '.join(cmd)}")
     
-    # We pipe stdout and stderr dynamically so we don't buffer excessively
-    # and output is streamed directly to GitHub Actions console
-    process = subprocess.Popen(
-        cmd, 
-        env=env,
-        stdout=subprocess.PIPE, 
-        stderr=subprocess.STDOUT,
-        text=True
-    )
+    # We let subprocess stream directly to the terminal
+    result = subprocess.run(cmd, env=env)
     
-    for line in iter(process.stdout.readline, ''):
-        print(f"     > {line}", end="")
-        
-    process.stdout.close()
-    return_code = process.wait()
-    
-    if return_code != 0:
-        print(f"\n[WRANGLER ERROR] failed with exit code {return_code}")
+    if result.returncode != 0:
+        print(f"\n[WRANGLER ERROR] failed with exit code {result.returncode}")
         sys.exit(1)
         
     print("\n  ✓ Wrangler execution successful!")
