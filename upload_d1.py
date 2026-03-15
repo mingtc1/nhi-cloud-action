@@ -1,5 +1,5 @@
 """
-Upload processed NHI drug data to Cloudflare D1 via REST HTTP API.
+Upload processed NHI drug data to Cloudflare D1 via Wrangler CLI.
 
 Usage:
     python upload_d1.py [--csv <path>]
@@ -13,16 +13,13 @@ Environment Variables Required:
 import os
 import sys
 import csv
-import json
-import requests
+import subprocess
 import argparse
 
 # ── Configuration ──────────────────────────────────────────────
 ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
 API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
 DATABASE_ID = os.environ.get("D1_DATABASE_ID")
-
-BATCH_SIZE = 500  # D1 free tier allows up to 1,000 statements per batch
 
 # CSV columns → DB columns (order matters for INSERT)
 COLUMNS = [
@@ -34,91 +31,83 @@ COLUMNS = [
 ]
 
 
-def d1_query(sql_statements):
-    """
-    Execute one or more SQL statements against D1 via the REST API.
-    Accepts a single dict or a list of dicts: { "sql": "...", "params": [...] }
-    """
-    url = (
-        f"https://api.cloudflare.com/client/v4/accounts/"
-        f"{ACCOUNT_ID}/d1/database/{DATABASE_ID}/query"
-    )
-    headers = {
-        "Authorization": f"Bearer {API_TOKEN}",
-        "Content-Type": "application/json",
-    }
-
-    payload = sql_statements if isinstance(sql_statements, list) else [sql_statements]
+def generate_sql(csv_path, sql_path):
+    """Read CSV and generate a standalone .sql file with all INSERTs."""
+    print(f"  [1/2] Generating {sql_path} from {csv_path}...")
     
-    # Remove empty params to avoid strict validation errors
-    for item in payload:
-        if "params" in item and not item["params"]:
-            del item["params"]
+    statements = [
+        "DROP TABLE IF EXISTS nhi_drugs;",
+        "CREATE TABLE nhi_drugs (id INTEGER PRIMARY KEY AUTOINCREMENT, 異動 TEXT, 藥品代號 TEXT, 藥品英文名稱 TEXT, 藥品中文名稱 TEXT, 成分 TEXT, 規格量 TEXT, 規格單位 TEXT, 單複方 TEXT, 支付價 TEXT, 有效起日 TEXT, 有效迄日 TEXT, 藥商 TEXT, 製造廠名稱 TEXT, 劑型 TEXT, 藥品分類 TEXT, 分類分組名稱 TEXT, ATC代碼 TEXT, 給付規定章節 TEXT, 藥品代碼超連結 TEXT, 給付規定章節連結 TEXT, 許可證字號 TEXT, updated_at TEXT DEFAULT (datetime('now')));",
+        "CREATE INDEX IF NOT EXISTS idx_drug_code ON nhi_drugs(藥品代號);",
+        "CREATE INDEX IF NOT EXISTS idx_license ON nhi_drugs(許可證字號);",
+        "CREATE INDEX IF NOT EXISTS idx_atc ON nhi_drugs(ATC代碼);"
+    ]
 
-    print(f"  [API] Sending {len(payload)} statements to D1...")
-    resp = requests.post(url, headers=headers, json=payload, timeout=120)
-    
-    if resp.status_code != 200:
-        print(f"\n[D1 API ERROR] HTTP {resp.status_code}")
-        print(f"[D1 API ERROR BODY] {resp.text}\n")
-        resp.raise_for_status()
-
-    data = resp.json()
-    if not data.get("success"):
-        errors = data.get("errors", [])
-        print(f"\n[D1 API ERROR JSON] {errors}\n")
-        raise RuntimeError(f"D1 API error: {errors}")
-        
-    return data
-
-
-def clear_table():
-    """Delete all existing rows so we can do a full refresh."""
-    print("  Clearing existing data …")
-    d1_query({"sql": "DELETE FROM nhi_drugs", "params": []})
-    print("  ✓ Table cleared.")
-
-
-def upload_csv(csv_path):
-    """Read CSV and batch-insert rows into D1."""
-    placeholders = ", ".join(["?"] * len(COLUMNS))
     col_names = ", ".join([f'"{c}"' for c in COLUMNS])
-    insert_sql = f"INSERT INTO nhi_drugs ({col_names}) VALUES ({placeholders})"
-
-    rows_total = 0
-    batch = []
+    count = 0
 
     with open(csv_path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            params = [row.get(c, "") for c in COLUMNS]
-            batch.append({"sql": insert_sql, "params": params})
+            vals = []
+            for c in COLUMNS:
+                # Clean up quotes to valid SQL strings
+                val = str(row.get(c, ""))
+                val_escaped = val.replace("'", "''")
+                vals.append(f"'{val_escaped}'")
+            
+            stmt = f"INSERT INTO nhi_drugs ({col_names}) VALUES ({', '.join(vals)});"
+            statements.append(stmt)
+            count += 1
 
-            if len(batch) >= BATCH_SIZE:
-                rows_total += len(batch)
-                print(f"  Inserting batch … ({rows_total} rows so far)")
-                d1_query(batch)
-                batch = []
-
-    # Flush remaining rows
-    if batch:
-        rows_total += len(batch)
-        d1_query(batch)
-
-    print(f"  ✓ Total {rows_total} rows inserted into D1.")
-    return rows_total
+    with open(sql_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(statements))
+        
+    print(f"  ✓ Valid SQL file generated with {count} rows.")
 
 
-def verify():
-    """Quick sanity check — print row count."""
-    result = d1_query({"sql": "SELECT COUNT(*) as cnt FROM nhi_drugs", "params": []})
-    count = result["result"][0]["results"][0]["cnt"]
-    print(f"  ✓ Verification: {count} rows in nhi_drugs table.")
-    return count
+def execute_wrangler(sql_path):
+    """Run `npx wrangler d1 execute <uuid> --remote --file=<path>` to push changes."""
+    print(f"  [2/2] Rebuilding D1 database using Wrangler CLI...")
+    
+    env = os.environ.copy()
+    # Wrangler CLI reads these natively:
+    # CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
+    
+    cmd = [
+        "npx", "wrangler@latest", "d1", "execute", 
+        DATABASE_ID, 
+        "--remote", 
+        f"--file={sql_path}"
+    ]
+    
+    print(f"     Running: {' '.join(cmd)}")
+    
+    # We pipe stdout and stderr dynamically so we don't buffer excessively
+    # and output is streamed directly to GitHub Actions console
+    process = subprocess.Popen(
+        cmd, 
+        env=env,
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+    
+    for line in iter(process.stdout.readline, ''):
+        print(f"     > {line}", end="")
+        
+    process.stdout.close()
+    return_code = process.wait()
+    
+    if return_code != 0:
+        print(f"\n[WRANGLER ERROR] failed with exit code {return_code}")
+        sys.exit(1)
+        
+    print("\n  ✓ Wrangler execution successful!")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Upload NHI data to Cloudflare D1")
+    parser = argparse.ArgumentParser(description="Upload NHI data to Cloudflare D1 via Wrangler")
     parser.add_argument(
         "--csv",
         default="cleaned_nhi_data_no_zero.csv",
@@ -138,14 +127,9 @@ def main():
 
     print(f"═══ Uploading {args.csv} to Cloudflare D1 ═══")
 
-    # Step 1: Clear old data
-    clear_table()
-
-    # Step 2: Batch insert new data
-    upload_csv(args.csv)
-
-    # Step 3: Verify
-    verify()
+    sql_file = "import.sql"
+    generate_sql(args.csv, sql_file)
+    execute_wrangler(sql_file)
 
     print("═══ D1 Upload Complete ═══")
 
