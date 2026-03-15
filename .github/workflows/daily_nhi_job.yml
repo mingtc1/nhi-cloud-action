@@ -1,11 +1,11 @@
 name: Daily NHI Drug Data Process and Upload
 
 # Trigger the workflow:
-# 1. Automatically via schedule (6:00 AM UTC everyday, which is 2:00 PM Taiwan time)
+# 1. Automatically via schedule (18:00 PM UTC everyday, which is 2:00 AM Taiwan time)
 # 2. Manually via 'workflow_dispatch' (Run workflow button in the UI)
 on:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 18 * * *'
   workflow_dispatch:
 
 jobs:

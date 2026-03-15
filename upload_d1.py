@@ -60,6 +60,10 @@ def generate_sql(csv_path, sql_path):
             statements.append(stmt)
             count += 1
 
+    # Add a sync log entry to record the exact time the job ran and how many records
+    statements.append("CREATE TABLE IF NOT EXISTS sync_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_time TEXT DEFAULT (datetime('now')), status TEXT, total_records INTEGER);")
+    statements.append(f"INSERT INTO sync_logs (status, total_records) VALUES ('Success', {count});")
+
     with open(sql_path, "w", encoding="utf-8") as f:
         f.write("\n".join(statements))
         
