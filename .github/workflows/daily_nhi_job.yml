@@ -29,15 +29,6 @@ jobs:
         # We use the python script to download, process, and exclude $0 items
         run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv
 
-      - name: Upload to Cloudflare R2
-        # The python script 'upload_r2.py' will handle Boto3 S3 upload
-        env:
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-        run: python upload_r2.py
-
       - name: Upload to Cloudflare D1
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
