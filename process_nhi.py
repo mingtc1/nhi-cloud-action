@@ -50,29 +50,35 @@ def process_nhi_data(output_path, exclude_zero=False):
     if proxy_token:
         headers["Authorization"] = f"Bearer {proxy_token}"
 
+    import time
+    import urllib.error
+
     MAX_RETRIES = 3
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            import time
             req = urllib.request.Request(proxy_url, headers=headers)
             # 60-minute timeout (94MB CSV can be slow over the wire)
             with urllib.request.urlopen(req, timeout=3600) as response:
-                if response.status == 429:
-                    print(f"   Rate limited by proxy (attempt {attempt}). Exiting.")
-                    return
-                if response.status != 200:
-                    raise Exception(f"Proxy returned HTTP {response.status}")
                 with open(download_path, 'wb') as out_file:
                     out_file.write(response.read())
             print(f"   Downloaded successfully to {download_path}")
             break
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                # Rate limited — no point retrying immediately
+                print(f"   Rate limited by proxy (HTTP 429). Exiting without retry.")
+                import sys; sys.exit(1)
+            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: HTTP {e.code} {e.reason}")
+            if attempt == MAX_RETRIES:
+                print("Download Error: All retry attempts failed. Exiting.")
+                import sys; sys.exit(1)
+            time.sleep(10 * attempt)  # back-off: 10s, 20s
         except Exception as e:
             print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
             if attempt == MAX_RETRIES:
                 print("Download Error: All retry attempts failed. Exiting.")
-                return
-            import time
-            time.sleep(10 * attempt)  # back-off: 10s, 20s
+                import sys; sys.exit(1)
+            time.sleep(10 * attempt)
 
     print("2. Loading dataset...")
     try:
