@@ -1,4 +1,3 @@
-import urllib.request
 import re
 import os
 import pandas as pd
@@ -51,34 +50,53 @@ def process_nhi_data(output_path, exclude_zero=False):
         headers["Authorization"] = f"Bearer {proxy_token}"
 
     import time
-    import urllib.error
+    import sys
+    import requests
 
+    CHUNK_SIZE = 1024 * 1024  # 1 MB chunks — stable for large files
     MAX_RETRIES = 3
+
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            req = urllib.request.Request(proxy_url, headers=headers)
-            # 60-minute timeout (94MB CSV can be slow over the wire)
-            with urllib.request.urlopen(req, timeout=3600) as response:
-                with open(download_path, 'wb') as out_file:
-                    out_file.write(response.read())
-            print(f"   Downloaded successfully to {download_path}")
-            break
-        except urllib.error.HTTPError as e:
-            if e.code == 429:
-                # Rate limited — no point retrying immediately
-                print(f"   Rate limited by proxy (HTTP 429). Exiting without retry.")
-                import sys; sys.exit(1)
-            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: HTTP {e.code} {e.reason}")
+            print(f"   Attempt {attempt}/{MAX_RETRIES}...")
+            with requests.get(
+                proxy_url,
+                headers=headers,
+                stream=True,           # stream=True: don't buffer entire response
+                timeout=(30, 3600),    # (connect timeout, read timeout)
+            ) as resp:
+                if resp.status_code == 429:
+                    print("   Rate limited by proxy (HTTP 429). Exiting without retry.")
+                    sys.exit(1)
+                if resp.status_code != 200:
+                    raise requests.HTTPError(
+                        f"Proxy returned HTTP {resp.status_code}", response=resp
+                    )
+                total = int(resp.headers.get("Content-Length", 0))
+                downloaded = 0
+                with open(download_path, "wb") as out_file:
+                    for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                        if chunk:
+                            out_file.write(chunk)
+                            downloaded += len(chunk)
+                            if total:
+                                pct = downloaded / total * 100
+                                print(f"\r   Progress: {downloaded // 1024 // 1024} MB / {total // 1024 // 1024} MB ({pct:.1f}%)", end="", flush=True)
+                print(f"\n   Downloaded successfully: {downloaded // 1024 // 1024} MB → {download_path}")
+            break  # success — exit retry loop
+
+        except requests.HTTPError as e:
+            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
             if attempt == MAX_RETRIES:
                 print("Download Error: All retry attempts failed. Exiting.")
-                import sys; sys.exit(1)
-            time.sleep(10 * attempt)  # back-off: 10s, 20s
+                sys.exit(1)
+            time.sleep(15 * attempt)  # back-off: 15s, 30s
         except Exception as e:
             print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
             if attempt == MAX_RETRIES:
                 print("Download Error: All retry attempts failed. Exiting.")
-                import sys; sys.exit(1)
-            time.sleep(10 * attempt)
+                sys.exit(1)
+            time.sleep(15 * attempt)
 
     print("2. Loading dataset...")
     try:
