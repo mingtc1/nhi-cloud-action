@@ -1,0 +1,20 @@
+name: OS Runner IP Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-ubuntu:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -I https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001 || echo "Failed"
+
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - run: curl -I https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001 || echo "Failed"
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - run: curl -I https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001 || echo "Failed"
