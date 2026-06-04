@@ -1,0 +1,21 @@
+name: OS Runner Real Download Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Download partial file on Windows
+        run: |
+          Invoke-WebRequest -Uri "https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001" -OutFile "test.csv" -MaximumRedirection 0 -TimeoutSec 15 -Headers @{"Range"="bytes=0-1000"}
+          Get-Content test.csv -TotalCount 5
+
+  test-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Download partial file on macOS
+        run: |
+          curl -v -r 0-1000 https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001 -o test.csv
+          cat test.csv | head -n 5
