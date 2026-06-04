@@ -34,43 +34,35 @@ def extract_license_number(url):
     return ""
 
 def process_nhi_data(output_path, exclude_zero=False):
-    # Cloudflare Worker proxy URL (bypasses NHI geo-restriction on GitHub IPs)
-    proxy_url = os.environ.get(
-        "NHI_PROXY_URL",
-        "https://nhi-proxy.mingster.workers.dev/download"
-    )
-    proxy_token = os.environ.get("NHI_PROXY_TOKEN", "")
+    # Direct NHI URL (GitHub Actions macos-latest bypasses the geo-restriction)
+    url = "https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001"
     download_path = "A21030000I-E41001-001.csv"
 
-    print("1. Downloading NHI Data via Cloudflare Proxy...")
-    print(f"   Proxy: {proxy_url}")
-
-    headers = {"User-Agent": "nhi-cloud-action/1.0"}
-    if proxy_token:
-        headers["Authorization"] = f"Bearer {proxy_token}"
+    print("1. Downloading NHI Data directly...")
+    print(f"   URL: {url}")
 
     import time
     import sys
     import requests
+    import urllib3
+    
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-    CHUNK_SIZE = 1024 * 1024  # 1 MB chunks — stable for large files
+    CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
     MAX_RETRIES = 3
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             print(f"   Attempt {attempt}/{MAX_RETRIES}...")
             with requests.get(
-                proxy_url,
-                headers=headers,
-                stream=True,           # stream=True: don't buffer entire response
+                url,
+                stream=True,
+                verify=False,          # Bypasses Taiwan Gov SSL issues
                 timeout=(30, 3600),    # (connect timeout, read timeout)
             ) as resp:
-                if resp.status_code == 429:
-                    print("   Rate limited by proxy (HTTP 429). Exiting without retry.")
-                    sys.exit(1)
                 if resp.status_code != 200:
                     raise requests.HTTPError(
-                        f"Proxy returned HTTP {resp.status_code}", response=resp
+                        f"Server returned HTTP {resp.status_code}", response=resp
                     )
                 total = int(resp.headers.get("Content-Length", 0))
                 downloaded = 0
@@ -86,13 +78,13 @@ def process_nhi_data(output_path, exclude_zero=False):
             break  # success — exit retry loop
 
         except requests.HTTPError as e:
-            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
+            print(f"\n   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
             if attempt == MAX_RETRIES:
                 print("Download Error: All retry attempts failed. Exiting.")
                 sys.exit(1)
-            time.sleep(15 * attempt)  # back-off: 15s, 30s
+            time.sleep(15 * attempt)
         except Exception as e:
-            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
+            print(f"\n   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
             if attempt == MAX_RETRIES:
                 print("Download Error: All retry attempts failed. Exiting.")
                 sys.exit(1)
