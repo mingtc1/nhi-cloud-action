@@ -1,0 +1,13 @@
+name: OS Runner Download Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-ubuntu-download:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -v -r 0-1000 https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001 -o test.csv
+          ls -la test.csv
+          cat test.csv | head -n 5
