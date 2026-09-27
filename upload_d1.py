@@ -26,6 +26,7 @@ ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
 API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
 ANALYTICS_TOKEN = os.environ.get("CLOUDFLARE_ANALYTICS_TOKEN") or API_TOKEN
 DATABASE_ID = os.environ.get("D1_DATABASE_ID")
+USAGE_DIAGNOSTIC: str | None = None
 
 DAILY_READ_LIMIT = int(os.environ.get("D1_DAILY_READ_LIMIT", "5000000"))
 DAILY_WRITE_LIMIT = int(os.environ.get("D1_DAILY_WRITE_LIMIT", "100000"))
@@ -208,6 +209,8 @@ def fetch_existing_rows() -> tuple[dict[str, dict[str, str]], int]:
 
 
 def get_account_usage() -> dict[str, int] | None:
+    global USAGE_DIAGNOSTIC
+    USAGE_DIAGNOSTIC = None
     query = """
     query D1DailyUsage($accountTag: string!, $date: Date!) {
       viewer {
@@ -230,6 +233,8 @@ def get_account_usage() -> dict[str, int] | None:
         response.raise_for_status()
         payload = response.json()
         if payload.get("errors"):
+            first_error = payload["errors"][0]
+            USAGE_DIAGNOSTIC = str(first_error.get("message") or "GraphQL Analytics API error")
             return None
         accounts = (((payload.get("data") or {}).get("viewer") or {}).get("accounts") or [])
         groups = accounts[0].get("d1AnalyticsAdaptiveGroups", []) if accounts else []
@@ -237,7 +242,12 @@ def get_account_usage() -> dict[str, int] | None:
             "rows_read": sum(int((group.get("sum") or {}).get("rowsRead") or 0) for group in groups),
             "rows_written": sum(int((group.get("sum") or {}).get("rowsWritten") or 0) for group in groups),
         }
-    except (requests.RequestException, ValueError, TypeError):
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response is not None else "unknown"
+        USAGE_DIAGNOSTIC = f"GraphQL Analytics API HTTP {status}"
+        return None
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        USAGE_DIAGNOSTIC = f"GraphQL Analytics API unavailable: {type(exc).__name__}"
         return None
 
 
@@ -377,10 +387,14 @@ def validate_live_database() -> dict[str, Any]:
     required_indexes = {"idx_drug_code", "idx_license", "idx_atc"}
     missing_indexes = sorted(required_indexes - set(indexes))
 
-    log_result = d1_query(
-        "SELECT sync_time, status, total_records FROM sync_logs ORDER BY id DESC LIMIT 1"
+    nhi_log_result = d1_query(
+        "SELECT sync_time, status, total_records FROM sync_logs WHERE status = 'Success' ORDER BY id DESC LIMIT 1"
     )
-    latest_log = (log_result.get("results") or [None])[0]
+    latest_nhi_log = (nhi_log_result.get("results") or [None])[0]
+    tfda_log_result = d1_query(
+        "SELECT sync_time, status, total_records FROM sync_logs WHERE status = 'TFDA Sync Success' ORDER BY id DESC LIMIT 1"
+    )
+    latest_tfda_log = (tfda_log_result.get("results") or [None])[0]
     state = get_sync_state_if_exists()
     usage = get_account_usage()
 
@@ -396,9 +410,11 @@ def validate_live_database() -> dict[str, Any]:
         "reason": reason,
         "tables": tables,
         "indexes": indexes,
-        "latest_sync_log": latest_log,
+        "latest_nhi_sync_log": latest_nhi_log,
+        "latest_tfda_sync_log": latest_tfda_log,
         "sync_state": state,
         "usage": usage,
+        "usage_diagnostic": USAGE_DIAGNOSTIC,
     }
 
 
