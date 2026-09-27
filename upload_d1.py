@@ -384,7 +384,7 @@ def validate_live_database() -> dict[str, Any]:
         "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'nhi_drugs' ORDER BY name"
     )
     indexes = [row.get("name") for row in (index_result.get("results") or [])]
-    required_indexes = {"idx_drug_code", "idx_license", "idx_atc"}
+    required_indexes = {"idx_drug_code", "idx_license", "idx_atc", "idx_group_name"}
     missing_indexes = sorted(required_indexes - set(indexes))
 
     nhi_log_result = d1_query(
