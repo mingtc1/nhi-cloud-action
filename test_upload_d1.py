@@ -63,6 +63,9 @@ class IncrementalUploadTests(unittest.TestCase):
             if os.path.exists(sql_path):
                 os.remove(sql_path)
 
+        self.assertNotIn("BEGIN TRANSACTION", sql)
+        self.assertNotIn("COMMIT;", sql)
+
         db = sqlite3.connect(":memory:")
         column_sql = ", ".join(f'"{column}" TEXT' for column in upload_d1.COLUMNS)
         db.execute(f"CREATE TABLE nhi_drugs (id INTEGER PRIMARY KEY AUTOINCREMENT, {column_sql}, updated_at TEXT)")

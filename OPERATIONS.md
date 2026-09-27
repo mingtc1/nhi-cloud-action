@@ -22,6 +22,7 @@ Override these values with `D1_READ_PAUSE_THRESHOLD`, `D1_WRITE_PAUSE_THRESHOLD`
 
 - Normal manual run: download, compare, and write only safe changes.
 - `nhi_dry_run=true`: download and compare, but do not create synchronization state, write drug data, or run TFDA.
+- `d1_preflight_only=true`: validate D1 connectivity, required tables, indexes, latest sync log, and account usage without downloading NHI data or writing D1.
 - `tfda_only=true`: skip NHI and run only the protected TFDA synchronization.
 
 Every NHI run writes `upload_report.json` and adds it to the GitHub Actions step summary. `deferred_quota` and `deferred_data_anomaly` deliberately mark the workflow unsuccessful so the condition is visible and retried on the next schedule.

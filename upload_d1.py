@@ -287,7 +287,9 @@ def generate_incremental_sql(
     total_records: int,
     sql_path: str,
 ) -> None:
-    statements = ["BEGIN TRANSACTION;"]
+    # Wrangler wraps SQL-file imports in a transaction. Cloudflare explicitly
+    # requires BEGIN/COMMIT to be removed from imported SQL files.
+    statements: list[str] = []
     quoted_columns = ", ".join(f'"{column}"' for column in COLUMNS)
 
     for row in diff.inserted:
@@ -315,7 +317,6 @@ def generate_incremental_sql(
         "ON CONFLICT(source) DO UPDATE SET data_hash=excluded.data_hash, last_checked_at=excluded.last_checked_at, "
         "last_changed_at=excluded.last_changed_at, last_status=excluded.last_status, total_records=excluded.total_records, "
         "pending_hash=NULL, pending_reason=NULL, next_retry_at=NULL, updated_at=excluded.updated_at;",
-        "COMMIT;",
     ])
     Path(sql_path).write_text("\n".join(statements) + "\n", encoding="utf-8")
 
@@ -359,15 +360,67 @@ def write_report(path: str, report: dict[str, Any]) -> None:
             output.write(f"reason={str(report.get('reason', '')).replace(chr(10), ' ')}\n")
 
 
+def validate_live_database() -> dict[str, Any]:
+    """Validate the live D1 guard rails without downloading or changing data."""
+    table_result = d1_query(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('nhi_drugs', 'sync_logs') ORDER BY name"
+    )
+    tables = [row.get("name") for row in (table_result.get("results") or [])]
+    missing_tables = sorted({"nhi_drugs", "sync_logs"} - set(tables))
+    if missing_tables:
+        raise D1Error(f"D1 缺少必要資料表: {', '.join(missing_tables)}")
+
+    index_result = d1_query(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'nhi_drugs' ORDER BY name"
+    )
+    indexes = [row.get("name") for row in (index_result.get("results") or [])]
+    required_indexes = {"idx_drug_code", "idx_license", "idx_atc"}
+    missing_indexes = sorted(required_indexes - set(indexes))
+
+    log_result = d1_query(
+        "SELECT sync_time, status, total_records FROM sync_logs ORDER BY id DESC LIMIT 1"
+    )
+    latest_log = (log_result.get("results") or [None])[0]
+    state = get_sync_state_if_exists()
+    usage = get_account_usage()
+
+    status = "preflight_ok" if not missing_indexes else "preflight_warning"
+    reason = (
+        "D1 連線、必要資料表及索引正常"
+        if not missing_indexes
+        else f"D1 缺少索引: {', '.join(missing_indexes)}"
+    )
+    return {
+        "status": status,
+        "checked_at": now_utc(),
+        "reason": reason,
+        "tables": tables,
+        "indexes": indexes,
+        "latest_sync_log": latest_log,
+        "sync_state": state,
+        "usage": usage,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Incrementally synchronize NHI data to Cloudflare D1")
     parser.add_argument("--csv", default="cleaned_nhi_data_no_zero.csv")
     parser.add_argument("--report", default="upload_report.json")
     parser.add_argument("--dry-run", action="store_true", help="Compare and budget-check without writing D1")
+    parser.add_argument(
+        "--validate-live",
+        action="store_true",
+        help="Validate live D1 connectivity, schema, indexes, and usage without downloading or writing",
+    )
     args = parser.parse_args()
 
     if not all([ACCOUNT_ID, API_TOKEN, DATABASE_ID]):
         raise ValueError("Missing CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, or D1_DATABASE_ID")
+    if args.validate_live:
+        report = validate_live_database()
+        write_report(args.report, report)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report["status"] == "preflight_ok" else 1
     if not Path(args.csv).exists():
         raise FileNotFoundError(args.csv)
 
