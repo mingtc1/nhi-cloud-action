@@ -1,8 +1,11 @@
 import re
 import os
+import hashlib
+import json
+import time
 import pandas as pd
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
 
 # License mappings
 lic_mapping = {
@@ -33,70 +36,143 @@ def extract_license_number(url):
                         return f"未知證別({prefix})字第{number}號"
     return ""
 
-def process_nhi_data(output_path, exclude_zero=False):
-    # Cloudflare Worker proxy URL (bypasses NHI geo-restriction on GitHub IPs)
+def download_nhi_data(download_path, report_path="nhi_download_report.json"):
+    official_url = os.environ.get(
+        "NHI_OFFICIAL_URL",
+        "https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001"
+    )
     proxy_url = os.environ.get(
         "NHI_PROXY_URL",
         "https://nhi-proxy.mingster.workers.dev/download"
     )
     proxy_token = os.environ.get("NHI_PROXY_TOKEN", "")
-    download_path = "A21030000I-E41001-001.csv"
+    source_mode = os.environ.get("NHI_SOURCE_MODE", "proxy_then_direct")
+    partial_path = f"{download_path}.part"
 
-    print("1. Downloading NHI Data via Cloudflare Proxy...")
-    print(f"   Proxy: {proxy_url}")
-
-    headers = {"User-Agent": "nhi-cloud-action/1.0"}
-    if proxy_token:
-        headers["Authorization"] = f"Bearer {proxy_token}"
-
-    import time
-    import sys
     import requests
+    import urllib3
 
     CHUNK_SIZE = 1024 * 1024  # 1 MB chunks — stable for large files
-    MAX_RETRIES = 3
+    source_modes = {
+        "proxy_then_direct": [
+            ("cloudflare_proxy", "Cloudflare proxy", proxy_url, True),
+            ("nhi_official_direct", "NHI official direct fallback", official_url, False),
+        ],
+        "direct_then_proxy": [
+            ("nhi_official_direct", "NHI official source", official_url, False),
+            ("cloudflare_proxy", "Cloudflare proxy fallback", proxy_url, True),
+        ],
+        "direct": [
+            ("nhi_official_direct", "NHI official source", official_url, False),
+        ],
+        "proxy": [
+            ("cloudflare_proxy", "Cloudflare proxy", proxy_url, True),
+        ],
+    }
+    if source_mode not in source_modes:
+        raise ValueError(f"Unsupported NHI_SOURCE_MODE: {source_mode}")
+    sources = source_modes[source_mode]
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            print(f"   Attempt {attempt}/{MAX_RETRIES}...")
-            with requests.get(
-                proxy_url,
-                headers=headers,
-                stream=True,           # stream=True: don't buffer entire response
-                timeout=(30, 3600),    # (connect timeout, read timeout)
-            ) as resp:
-                if resp.status_code == 429:
-                    print("   Rate limited by proxy (HTTP 429). Exiting without retry.")
-                    sys.exit(1)
-                if resp.status_code != 200:
-                    raise requests.HTTPError(
-                        f"Proxy returned HTTP {resp.status_code}", response=resp
+    print("1. Downloading NHI Data...")
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    errors = []
+    for source_id, source_name, source_url, is_proxy in sources:
+        headers = {"User-Agent": "nhi-cloud-action/1.0"}
+        if is_proxy and proxy_token:
+            headers["Authorization"] = f"Bearer {proxy_token}"
+        if is_proxy and os.environ.get("NHI_PROXY_DIAGNOSTIC") == "1":
+            headers["X-Diagnostic-Dry-Run"] = "1"
+
+        print(f"   Source: {source_name}")
+        print(f"   URL: {source_url}")
+        max_attempts = 2 if is_proxy else 3
+        for attempt in range(1, max_attempts + 1):
+            try:
+                print(f"   Attempt {attempt}/{max_attempts}...")
+                with requests.get(
+                    source_url,
+                    headers=headers,
+                    stream=True,
+                    verify=is_proxy,
+                    timeout=(30, 3600),
+                ) as resp:
+                    if resp.status_code != 200:
+                        first_chunk = next(resp.iter_content(chunk_size=1024), b"")
+                        detail = first_chunk.decode("utf-8", errors="replace").strip()
+                        message = f"HTTP {resp.status_code}"
+                        if detail:
+                            message += f": {detail[:1000]}"
+                        errors.append(f"{source_id} attempt {attempt}: {message}")
+                        print(f"   {source_name} returned {message}")
+                        if resp.status_code in (401, 403, 404, 429):
+                            break
+                        if attempt < max_attempts:
+                            time.sleep(15 * attempt)
+                        continue
+
+                    total = int(resp.headers.get("Content-Length", 0))
+                    downloaded = 0
+                    digest = hashlib.sha256()
+                    with open(partial_path, "wb") as out_file:
+                        for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                            if chunk:
+                                out_file.write(chunk)
+                                digest.update(chunk)
+                                downloaded += len(chunk)
+                                if total:
+                                    pct = downloaded / total * 100
+                                    print(
+                                        f"\r   Progress: {downloaded // 1024 // 1024} MB / "
+                                        f"{total // 1024 // 1024} MB ({pct:.1f}%)",
+                                        end="",
+                                        flush=True,
+                                    )
+                    if downloaded == 0:
+                        raise RuntimeError("downloaded file is empty")
+                    os.replace(partial_path, download_path)
+                    report = {
+                        "status": "success",
+                        "source": source_id,
+                        "source_mode": source_mode,
+                        "downloaded_at": datetime.now(timezone.utc).isoformat(),
+                        "bytes": downloaded,
+                        "sha256": digest.hexdigest(),
+                        "proxy_colo": resp.headers.get("X-Worker-Colo") if is_proxy else None,
+                    }
+                    with open(report_path, "w", encoding="utf-8") as report_file:
+                        json.dump(report, report_file, ensure_ascii=False, indent=2)
+                    print(
+                        f"\n   Downloaded successfully from {source_name}: "
+                        f"{downloaded // 1024 // 1024} MB → {download_path}"
                     )
-                total = int(resp.headers.get("Content-Length", 0))
-                downloaded = 0
-                with open(download_path, "wb") as out_file:
-                    for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
-                        if chunk:
-                            out_file.write(chunk)
-                            downloaded += len(chunk)
-                            if total:
-                                pct = downloaded / total * 100
-                                print(f"\r   Progress: {downloaded // 1024 // 1024} MB / {total // 1024 // 1024} MB ({pct:.1f}%)", end="", flush=True)
-                print(f"\n   Downloaded successfully: {downloaded // 1024 // 1024} MB → {download_path}")
-            break  # success — exit retry loop
+                    return report
+            except Exception as exc:
+                errors.append(f"{source_id} attempt {attempt}: {exc}")
+                print(f"   {source_name} attempt {attempt} failed: {exc}")
+                if os.path.exists(partial_path):
+                    os.remove(partial_path)
+                if attempt < max_attempts:
+                    time.sleep(15 * attempt)
 
-        except requests.HTTPError as e:
-            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
-            if attempt == MAX_RETRIES:
-                print("Download Error: All retry attempts failed. Exiting.")
-                sys.exit(1)
-            time.sleep(15 * attempt)  # back-off: 15s, 30s
-        except Exception as e:
-            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
-            if attempt == MAX_RETRIES:
-                print("Download Error: All retry attempts failed. Exiting.")
-                sys.exit(1)
-            time.sleep(15 * attempt)
+    failure_report = {
+        "status": "failed",
+        "source_mode": source_mode,
+        "failed_at": datetime.now(timezone.utc).isoformat(),
+        "errors": errors,
+    }
+    with open(report_path, "w", encoding="utf-8") as report_file:
+        json.dump(failure_report, report_file, ensure_ascii=False, indent=2)
+    raise RuntimeError("All configured NHI download sources failed")
+
+
+def process_nhi_data(output_path, exclude_zero=False, download_only=False):
+    download_path = "A21030000I-E41001-001.csv"
+    download_nhi_data(download_path)
+
+    if download_only:
+        os.remove(download_path)
+        print("Download-only check complete; D1 was not read or written.")
+        return
 
     print("2. Loading dataset...")
     try:
@@ -139,6 +215,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process NHI Drug Data")
     parser.add_argument("--output", default="processed_nhi_data.csv", help="Output file path")
     parser.add_argument("--exclude-zero", action="store_true", help="Exclude items with a 0 payment price")
+    parser.add_argument("--download-only", action="store_true", help="Verify NHI download without processing or D1 access")
     args = parser.parse_args()
     
-    process_nhi_data(args.output, args.exclude_zero)
+    process_nhi_data(args.output, args.exclude_zero, args.download_only)

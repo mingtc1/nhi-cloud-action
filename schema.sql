@@ -33,3 +33,4 @@ CREATE TABLE nhi_drugs (
 CREATE INDEX idx_drug_code ON nhi_drugs(藥品代號);
 CREATE INDEX idx_license ON nhi_drugs(許可證字號);
 CREATE INDEX idx_atc ON nhi_drugs(ATC代碼);
+CREATE INDEX idx_group_name ON nhi_drugs(分類分組名稱);

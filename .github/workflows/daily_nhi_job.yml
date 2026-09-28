@@ -1,11 +1,10 @@
-name: Daily NHI Drug Data Process and Upload
+name: Daily NHI and TFDA Data Synchronization
 
-# Trigger the workflow:
-# 1. Automatically via schedule (18:00 PM UTC everyday, which is 2:00 AM Taiwan time)
-# 2. Manually via 'workflow_dispatch' (Run workflow button in the UI)
+# 21:30 Taiwan time: GitHub-hosted jobs perform the NHI check, D1 validation,
+# and TFDA synchronization. No user computer is part of the production path.
 on:
   schedule:
-    - cron: '0 18 * * *'
+    - cron: '30 13 * * *'
   workflow_dispatch:
     inputs:
       tfda_only:
@@ -13,51 +12,143 @@ on:
         required: false
         type: boolean
         default: false
-
-# Prevent concurrent runs (e.g. if a manual trigger overlaps with cron).
-# This ensures only one instance downloads at a time, protecting the
-# rate-limit check on the Worker proxy side.
-concurrency:
-  group: nhi-daily-pipeline
-  cancel-in-progress: false
+      nhi_dry_run:
+        description: '只檢查 NHI 差異與預算，不寫入 D1'
+        required: false
+        type: boolean
+        default: false
+      nhi_download_only:
+        description: '只測試 NHI 下載，不讀取或寫入 D1'
+        required: false
+        type: boolean
+        default: false
+      d1_preflight_only:
+        description: '只驗證 D1 連線、資料表、索引與用量'
+        required: false
+        type: boolean
+        default: false
+      nhi_proxy_url:
+        description: 'NHI Proxy 網址；留空使用正式環境'
+        required: false
+        type: string
+        default: ''
+      nhi_source_mode:
+        description: 'NHI 下載來源策略'
+        required: false
+        type: choice
+        options:
+          - proxy_then_direct
+          - direct_then_proxy
+          - direct
+          - proxy
+        default: proxy_then_direct
 
 jobs:
-  process-and-upload:
+  nhi-sync:
+    if: ${{ github.event_name == 'schedule' || (inputs.tfda_only != true && inputs.d1_preflight_only != true) }}
     runs-on: macos-latest
-    timeout-minutes: 90   # hard stop: prevents runaway loops burning proxy quota
+    timeout-minutes: 90
+    concurrency:
+      group: nhi-daily-import
+      cancel-in-progress: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Setup Python 3.10
-        if: ${{ inputs.tfda_only != true }}
         uses: actions/setup-python@v6
         with:
           python-version: '3.10'
-          cache: 'pip' # cache pip dependencies
+          cache: 'pip'
 
       - name: Install Dependencies
-        if: ${{ inputs.tfda_only != true }}
         run: pip install -r requirements.txt
 
       - name: Process NHI Data (Exclude Zero Price)
-        if: ${{ inputs.tfda_only != true }}
-        # NHI_PROXY_TOKEN authenticates with the Cloudflare Worker proxy.
-        # The proxy bypasses NHI's geo-restriction that blocks GitHub Actions IPs.
+        id: nhi_process
+        continue-on-error: ${{ inputs.nhi_download_only == true }}
         env:
           NHI_PROXY_TOKEN: ${{ secrets.NHI_PROXY_TOKEN }}
-        run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv
+          NHI_PROXY_URL: ${{ inputs.nhi_proxy_url || 'https://nhi-proxy.mingster.workers.dev/download' }}
+          NHI_PROXY_DIAGNOSTIC: ${{ (inputs.nhi_dry_run == true || inputs.nhi_download_only == true) && '1' || '0' }}
+          NHI_SOURCE_MODE: ${{ inputs.nhi_source_mode || 'proxy_then_direct' }}
+        run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv ${{ inputs.nhi_download_only == true && '--download-only' || '' }}
 
-      - name: Upload to Cloudflare D1
-        if: ${{ inputs.tfda_only != true }}
+      - name: Upload incremental changes to Cloudflare D1
+        id: nhi_upload
+        if: ${{ inputs.nhi_download_only != true && steps.nhi_process.outcome == 'success' }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
-        run: python upload_d1.py --csv cleaned_nhi_data_no_zero.csv
+        run: python upload_d1.py --csv cleaned_nhi_data_no_zero.csv --report upload_report.json ${{ inputs.nhi_dry_run == true && '--dry-run' || '' }}
+
+      - name: Add NHI synchronization report
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          echo '## NHI synchronization report' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f nhi_download_report.json ]; then
+            echo '### Download' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat nhi_download_report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f upload_report.json ]; then
+            echo '### D1 update' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat upload_report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ inputs.nhi_download_only }}" != "true" ]; then
+            echo 'The NHI step ended before a report could be generated.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Mark download-only failure as diagnostic warning
+        if: ${{ always() && inputs.nhi_download_only == true && steps.nhi_process.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::NHI download diagnostic failed; D1 was not accessed. See the download report above."
+
+      - name: Mark deferred NHI synchronization for notification
+        if: ${{ always() && (steps.nhi_upload.outputs.status == 'deferred_quota' || steps.nhi_upload.outputs.status == 'deferred_data_anomaly') }}
+        shell: bash
+        run: |
+          echo "::error::NHI update deferred: ${{ steps.nhi_upload.outputs.reason }}"
+          exit 1
+
+  cloud-maintenance:
+    if: ${{ github.event_name == 'schedule' || inputs.tfda_only == true || inputs.d1_preflight_only == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: tfda-and-d1-preflight
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python 3.10
+        if: ${{ github.event_name == 'schedule' || inputs.d1_preflight_only == true }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        if: ${{ github.event_name == 'schedule' || inputs.d1_preflight_only == true }}
+        run: pip install -r requirements.txt
+
+      - name: Validate Cloudflare D1 guard rails
+        if: ${{ github.event_name == 'schedule' || inputs.d1_preflight_only == true }}
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
+        run: python upload_d1.py --validate-live --report upload_report.json
 
       - name: Sync TFDA supply and recall data
+        if: ${{ always() && (github.event_name == 'schedule' || inputs.tfda_only == true) }}
         env:
           TFDA_SYNC_TOKEN: ${{ secrets.TFDA_SYNC_TOKEN }}
         run: |

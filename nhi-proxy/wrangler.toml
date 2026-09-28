@@ -1,0 +1,9 @@
+name = "nhi-proxy"
+main = "src/index.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id = "ca14da85d2264b7fb0ec0a7d032c6b86"
