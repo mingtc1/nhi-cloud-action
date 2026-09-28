@@ -69,6 +69,16 @@ def process_nhi_data(output_path, exclude_zero=False):
                     print("   Rate limited by proxy (HTTP 429). Exiting without retry.")
                     sys.exit(1)
                 if resp.status_code != 200:
+                    # The proxy returns a small JSON body that includes the
+                    # upstream NHI status. Read only the first chunk so an
+                    # unexpected large error page is never buffered in memory.
+                    first_chunk = next(resp.iter_content(chunk_size=1024), b"")
+                    detail = first_chunk.decode("utf-8", errors="replace").strip()
+                    if detail:
+                        print(f"   Proxy error detail: {detail[:1000]}")
+                    if resp.status_code == 502:
+                        print("   Proxy could not reach NHI upstream (HTTP 502). Skipping immediate retries.")
+                        sys.exit(1)
                     raise requests.HTTPError(
                         f"Proxy returned HTTP {resp.status_code}", response=resp
                     )
