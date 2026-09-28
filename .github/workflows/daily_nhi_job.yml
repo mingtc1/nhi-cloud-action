@@ -17,6 +17,11 @@ on:
         required: false
         type: boolean
         default: false
+      nhi_download_only:
+        description: '只測試 NHI 下載，不讀取或寫入 D1'
+        required: false
+        type: boolean
+        default: false
       d1_preflight_only:
         description: '只驗證 D1 連線、資料表、索引與用量'
         required: false
@@ -32,10 +37,11 @@ on:
         required: false
         type: choice
         options:
+          - proxy_then_direct
           - direct_then_proxy
           - direct
           - proxy
-        default: direct_then_proxy
+        default: proxy_then_direct
 
 jobs:
   nhi-sync:
@@ -63,12 +69,13 @@ jobs:
         env:
           NHI_PROXY_TOKEN: ${{ secrets.NHI_PROXY_TOKEN }}
           NHI_PROXY_URL: ${{ inputs.nhi_proxy_url || 'https://nhi-proxy.mingster.workers.dev/download' }}
-          NHI_PROXY_DIAGNOSTIC: ${{ inputs.nhi_dry_run == true && '1' || '0' }}
-          NHI_SOURCE_MODE: ${{ inputs.nhi_source_mode || 'direct_then_proxy' }}
-        run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv
+          NHI_PROXY_DIAGNOSTIC: ${{ (inputs.nhi_dry_run == true || inputs.nhi_download_only == true) && '1' || '0' }}
+          NHI_SOURCE_MODE: ${{ inputs.nhi_source_mode || 'proxy_then_direct' }}
+        run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv ${{ inputs.nhi_download_only == true && '--download-only' || '' }}
 
       - name: Upload incremental changes to Cloudflare D1
         id: nhi_upload
+        if: ${{ inputs.nhi_download_only != true }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -80,11 +87,18 @@ jobs:
         shell: bash
         run: |
           echo '## NHI synchronization report' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f nhi_download_report.json ]; then
+            echo '### Download' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat nhi_download_report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f upload_report.json ]; then
+            echo '### D1 update' >> "$GITHUB_STEP_SUMMARY"
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             cat upload_report.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-          else
+          elif [ "${{ inputs.nhi_download_only }}" != "true" ]; then
             echo 'The NHI step ended before a report could be generated.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
