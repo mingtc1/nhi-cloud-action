@@ -1,5 +1,6 @@
 import re
 import os
+import subprocess
 import pandas as pd
 import argparse
 from datetime import datetime
@@ -73,6 +74,39 @@ def process_nhi_data(output_path, exclude_zero=False):
         print(f"   Source: {source_name}")
         print(f"   URL: {source_url}")
         try:
+            if not is_proxy:
+                curl_result = subprocess.run(
+                    [
+                        "curl",
+                        "--fail-with-body",
+                        "--location",
+                        "--connect-timeout", "30",
+                        "--max-time", "3600",
+                        "--user-agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                        "--header", "Accept: text/csv,*/*",
+                        "--output", partial_path,
+                        source_url,
+                    ],
+                    check=False,
+                )
+                if curl_result.returncode != 0:
+                    print(
+                        f"   {source_name} curl failed with exit code "
+                        f"{curl_result.returncode}."
+                    )
+                    if os.path.exists(partial_path):
+                        os.remove(partial_path)
+                    continue
+                os.replace(partial_path, download_path)
+                downloaded = os.path.getsize(download_path)
+                print(
+                    f"   Downloaded successfully: {downloaded // 1024 // 1024} MB "
+                    f"→ {download_path}"
+                )
+                downloaded_ok = True
+                break
+
             with requests.get(
                 source_url,
                 headers=headers,
