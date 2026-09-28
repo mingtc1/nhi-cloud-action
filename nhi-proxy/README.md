@@ -6,9 +6,11 @@ per six hours, and streams the official NHI CSV without writing to D1.
 Authenticated workflow diagnostics can send `X-Diagnostic-Dry-Run: 1` so a
 successful preview test does not consume the production six-hour window.
 
-The placement hint runs the Worker close to `info.nhi.gov.tw`. This avoids
-routing the origin request from the GitHub runner's nearest Cloudflare location,
-which returned upstream HTTP 520 during the 2026-09-28 diagnostic run.
+The proxy remains a fallback. The primary NHI download runs on the Taiwan
+self-hosted runner because Cloudflare-to-Cloudflare requests to the official
+source returned upstream HTTP 520. A hostname placement hint was tested and
+removed because the official hostname is anycast and the Worker still ran in a
+United States data center.
 
 Upload a preview version first:
 

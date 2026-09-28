@@ -1,11 +1,10 @@
-name: Daily NHI Drug Data Process and Upload
+name: Daily NHI and TFDA Data Synchronization
 
-# Trigger the workflow:
-# 1. Automatically via schedule (18:00 PM UTC everyday, which is 2:00 AM Taiwan time)
-# 2. Manually via 'workflow_dispatch' (Run workflow button in the UI)
+# 21:30 Taiwan time: the Taiwan self-hosted runner checks NHI while an
+# independent GitHub-hosted job validates D1 and syncs TFDA.
 on:
   schedule:
-    - cron: '0 18 * * *'
+    - cron: '30 13 * * *'
   workflow_dispatch:
     inputs:
       tfda_only:
@@ -14,12 +13,12 @@ on:
         type: boolean
         default: false
       nhi_dry_run:
-        description: '只檢查 NHI 差異與預算，不寫入 D1，也不執行 TFDA'
+        description: '只檢查 NHI 差異與預算，不寫入 D1'
         required: false
         type: boolean
         default: false
       d1_preflight_only:
-        description: '只驗證 D1 連線、資料表、索引與用量，不下載 NHI、不寫入 D1'
+        description: '只驗證 D1 連線、資料表、索引與用量'
         required: false
         type: boolean
         default: false
@@ -38,37 +37,29 @@ on:
           - proxy
         default: direct_then_proxy
 
-# Prevent concurrent runs (e.g. if a manual trigger overlaps with cron).
-# This ensures only one instance downloads at a time, protecting the
-# rate-limit check on the Worker proxy side.
-concurrency:
-  group: nhi-daily-pipeline
-  cancel-in-progress: false
-
 jobs:
-  process-and-upload:
-    runs-on: macos-latest
-    timeout-minutes: 90   # hard stop: prevents runaway loops burning proxy quota
+  nhi-sync:
+    if: ${{ github.event_name == 'schedule' || (inputs.tfda_only != true && inputs.d1_preflight_only != true) }}
+    runs-on: [self-hosted, Windows, X64, nhi-taiwan]
+    timeout-minutes: 90
+    concurrency:
+      group: nhi-daily-import
+      cancel-in-progress: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
 
       - name: Setup Python 3.10
-        if: ${{ inputs.tfda_only != true }}
         uses: actions/setup-python@v6
         with:
           python-version: '3.10'
-          cache: 'pip' # cache pip dependencies
+          cache: 'pip'
 
       - name: Install Dependencies
-        if: ${{ inputs.tfda_only != true }}
         run: pip install -r requirements.txt
 
       - name: Process NHI Data (Exclude Zero Price)
-        if: ${{ inputs.tfda_only != true && inputs.d1_preflight_only != true }}
-        # Download directly from the official source first. The authenticated
-        # proxy remains a fallback when the official route is temporarily down.
         env:
           NHI_PROXY_TOKEN: ${{ secrets.NHI_PROXY_TOKEN }}
           NHI_PROXY_URL: ${{ inputs.nhi_proxy_url || 'https://nhi-proxy.mingster.workers.dev/download' }}
@@ -76,40 +67,67 @@ jobs:
           NHI_SOURCE_MODE: ${{ inputs.nhi_source_mode || 'direct_then_proxy' }}
         run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv
 
-      - name: Upload to Cloudflare D1
+      - name: Upload incremental changes to Cloudflare D1
         id: nhi_upload
-        if: ${{ inputs.tfda_only != true && inputs.d1_preflight_only != true }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
         run: python upload_d1.py --csv cleaned_nhi_data_no_zero.csv --report upload_report.json ${{ inputs.nhi_dry_run == true && '--dry-run' || '' }}
 
+      - name: Add NHI synchronization report
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_STEP_SUMMARY '## NHI synchronization report'
+          if (Test-Path -LiteralPath 'upload_report.json') {
+            Add-Content $env:GITHUB_STEP_SUMMARY '```json'
+            Get-Content -LiteralPath 'upload_report.json' | Add-Content $env:GITHUB_STEP_SUMMARY
+            Add-Content $env:GITHUB_STEP_SUMMARY '```'
+          } else {
+            Add-Content $env:GITHUB_STEP_SUMMARY 'The NHI step ended before a report could be generated.'
+          }
+
+      - name: Mark deferred NHI synchronization for notification
+        if: ${{ always() && (steps.nhi_upload.outputs.status == 'deferred_quota' || steps.nhi_upload.outputs.status == 'deferred_data_anomaly') }}
+        shell: pwsh
+        run: |
+          Write-Error "NHI update deferred: ${{ steps.nhi_upload.outputs.reason }}"
+          exit 1
+
+  cloud-maintenance:
+    if: ${{ github.event_name == 'schedule' || inputs.tfda_only == true || inputs.d1_preflight_only == true }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: tfda-and-d1-preflight
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python 3.10
+        if: ${{ github.event_name == 'schedule' || inputs.d1_preflight_only == true }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        if: ${{ github.event_name == 'schedule' || inputs.d1_preflight_only == true }}
+        run: pip install -r requirements.txt
+
       - name: Validate Cloudflare D1 guard rails
-        id: d1_preflight
-        if: ${{ inputs.d1_preflight_only == true }}
+        if: ${{ github.event_name == 'schedule' || inputs.d1_preflight_only == true }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
         run: python upload_d1.py --validate-live --report upload_report.json
 
-      - name: Add NHI synchronization report
-        if: ${{ always() && inputs.tfda_only != true }}
-        shell: bash
-        run: |
-          if [ -f upload_report.json ]; then
-            echo '## NHI synchronization report' >> "$GITHUB_STEP_SUMMARY"
-            echo '```json' >> "$GITHUB_STEP_SUMMARY"
-            cat upload_report.json >> "$GITHUB_STEP_SUMMARY"
-            echo '```' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo '## NHI synchronization report' >> "$GITHUB_STEP_SUMMARY"
-            echo 'The NHI step ended before a report could be generated.' >> "$GITHUB_STEP_SUMMARY"
-          fi
-
       - name: Sync TFDA supply and recall data
-        if: ${{ always() && inputs.nhi_dry_run != true && inputs.d1_preflight_only != true }}
+        if: ${{ always() && (github.event_name == 'schedule' || inputs.tfda_only == true) }}
         env:
           TFDA_SYNC_TOKEN: ${{ secrets.TFDA_SYNC_TOKEN }}
         run: |
@@ -117,10 +135,3 @@ jobs:
             --request POST \
             --header "Authorization: Bearer ${TFDA_SYNC_TOKEN}" \
             https://nhidrug.mingtc.com/api/sync/tfda
-
-      - name: Mark deferred NHI synchronization for notification
-        if: ${{ always() && inputs.tfda_only != true && (steps.nhi_upload.outputs.status == 'deferred_quota' || steps.nhi_upload.outputs.status == 'deferred_data_anomaly') }}
-        shell: bash
-        run: |
-          echo "::error::NHI update deferred: ${{ steps.nhi_upload.outputs.reason }}"
-          exit 1
