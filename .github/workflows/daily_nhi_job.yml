@@ -23,6 +23,11 @@ on:
         required: false
         type: boolean
         default: false
+      nhi_proxy_url:
+        description: 'NHI Proxy 網址；留空使用正式環境'
+        required: false
+        type: string
+        default: ''
 
 # Prevent concurrent runs (e.g. if a manual trigger overlaps with cron).
 # This ensures only one instance downloads at a time, protecting the
@@ -57,6 +62,7 @@ jobs:
         # The proxy bypasses NHI's geo-restriction that blocks GitHub Actions IPs.
         env:
           NHI_PROXY_TOKEN: ${{ secrets.NHI_PROXY_TOKEN }}
+          NHI_PROXY_URL: ${{ inputs.nhi_proxy_url || 'https://nhi-proxy.mingster.workers.dev/download' }}
         run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv
 
       - name: Upload to Cloudflare D1
