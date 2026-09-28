@@ -63,6 +63,7 @@ jobs:
         env:
           NHI_PROXY_TOKEN: ${{ secrets.NHI_PROXY_TOKEN }}
           NHI_PROXY_URL: ${{ inputs.nhi_proxy_url || 'https://nhi-proxy.mingster.workers.dev/download' }}
+          NHI_PROXY_DIAGNOSTIC: ${{ inputs.nhi_dry_run == true && '1' || '0' }}
         run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv
 
       - name: Upload to Cloudflare D1

@@ -40,7 +40,9 @@ export default {
       return new Response("Unauthorized", { status: 401 });
     }
 
-    if (env.RATE_LIMIT_KV) {
+    const isDiagnostic = request.headers.get("X-Diagnostic-Dry-Run") === "1";
+
+    if (env.RATE_LIMIT_KV && !isDiagnostic) {
       const lastTs = await env.RATE_LIMIT_KV.get(RATE_LIMIT_KEY);
       if (lastTs) {
         const elapsed = Math.floor(Date.now() / 1000) - Number.parseInt(lastTs, 10);
@@ -97,7 +99,7 @@ export default {
       );
     }
 
-    if (env.RATE_LIMIT_KV) {
+    if (env.RATE_LIMIT_KV && !isDiagnostic) {
       await env.RATE_LIMIT_KV.put(
         RATE_LIMIT_KEY,
         String(Math.floor(Date.now() / 1000)),

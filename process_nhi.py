@@ -48,6 +48,8 @@ def process_nhi_data(output_path, exclude_zero=False):
     headers = {"User-Agent": "nhi-cloud-action/1.0"}
     if proxy_token:
         headers["Authorization"] = f"Bearer {proxy_token}"
+    if os.environ.get("NHI_PROXY_DIAGNOSTIC") == "1":
+        headers["X-Diagnostic-Dry-Run"] = "1"
 
     import time
     import sys
