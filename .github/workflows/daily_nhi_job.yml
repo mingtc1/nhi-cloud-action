@@ -1,7 +1,7 @@
 name: Daily NHI and TFDA Data Synchronization
 
-# 21:30 Taiwan time: the Taiwan self-hosted runner checks NHI while an
-# independent GitHub-hosted job validates D1 and syncs TFDA.
+# 21:30 Taiwan time: GitHub-hosted jobs perform the NHI check, D1 validation,
+# and TFDA synchronization. No user computer is part of the production path.
 on:
   schedule:
     - cron: '30 13 * * *'
@@ -40,7 +40,7 @@ on:
 jobs:
   nhi-sync:
     if: ${{ github.event_name == 'schedule' || (inputs.tfda_only != true && inputs.d1_preflight_only != true) }}
-    runs-on: [self-hosted, Windows, X64, nhi-taiwan]
+    runs-on: macos-latest
     timeout-minutes: 90
     concurrency:
       group: nhi-daily-import
@@ -77,22 +77,22 @@ jobs:
 
       - name: Add NHI synchronization report
         if: ${{ always() }}
-        shell: pwsh
+        shell: bash
         run: |
-          Add-Content $env:GITHUB_STEP_SUMMARY '## NHI synchronization report'
-          if (Test-Path -LiteralPath 'upload_report.json') {
-            Add-Content $env:GITHUB_STEP_SUMMARY '```json'
-            Get-Content -LiteralPath 'upload_report.json' | Add-Content $env:GITHUB_STEP_SUMMARY
-            Add-Content $env:GITHUB_STEP_SUMMARY '```'
-          } else {
-            Add-Content $env:GITHUB_STEP_SUMMARY 'The NHI step ended before a report could be generated.'
-          }
+          echo '## NHI synchronization report' >> "$GITHUB_STEP_SUMMARY"
+          if [ -f upload_report.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat upload_report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'The NHI step ended before a report could be generated.' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Mark deferred NHI synchronization for notification
         if: ${{ always() && (steps.nhi_upload.outputs.status == 'deferred_quota' || steps.nhi_upload.outputs.status == 'deferred_data_anomaly') }}
-        shell: pwsh
+        shell: bash
         run: |
-          Write-Error "NHI update deferred: ${{ steps.nhi_upload.outputs.reason }}"
+          echo "::error::NHI update deferred: ${{ steps.nhi_upload.outputs.reason }}"
           exit 1
 
   cloud-maintenance:
