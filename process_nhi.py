@@ -34,59 +34,64 @@ def extract_license_number(url):
     return ""
 
 def process_nhi_data(output_path, exclude_zero=False):
-    # Cloudflare Worker proxy URL (bypasses NHI geo-restriction on GitHub IPs)
+    official_url = os.environ.get(
+        "NHI_OFFICIAL_URL",
+        "https://info.nhi.gov.tw/api/iode0000s01/Dataset?rId=A21030000I-E41001-001"
+    )
     proxy_url = os.environ.get(
         "NHI_PROXY_URL",
         "https://nhi-proxy.mingster.workers.dev/download"
     )
     proxy_token = os.environ.get("NHI_PROXY_TOKEN", "")
+    source_mode = os.environ.get("NHI_SOURCE_MODE", "direct_then_proxy")
     download_path = "A21030000I-E41001-001.csv"
+    partial_path = f"{download_path}.part"
 
-    print("1. Downloading NHI Data via Cloudflare Proxy...")
-    print(f"   Proxy: {proxy_url}")
-
-    headers = {"User-Agent": "nhi-cloud-action/1.0"}
-    if proxy_token:
-        headers["Authorization"] = f"Bearer {proxy_token}"
-    if os.environ.get("NHI_PROXY_DIAGNOSTIC") == "1":
-        headers["X-Diagnostic-Dry-Run"] = "1"
-
-    import time
     import sys
     import requests
 
     CHUNK_SIZE = 1024 * 1024  # 1 MB chunks — stable for large files
-    MAX_RETRIES = 3
+    if source_mode == "direct":
+        sources = [("NHI official source", official_url, False)]
+    elif source_mode == "proxy":
+        sources = [("Cloudflare proxy", proxy_url, True)]
+    else:
+        sources = [
+            ("NHI official source", official_url, False),
+            ("Cloudflare proxy fallback", proxy_url, True),
+        ]
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    print("1. Downloading NHI Data...")
+    downloaded_ok = False
+    for source_name, source_url, is_proxy in sources:
+        headers = {"User-Agent": "nhi-cloud-action/1.0"}
+        if is_proxy and proxy_token:
+            headers["Authorization"] = f"Bearer {proxy_token}"
+        if is_proxy and os.environ.get("NHI_PROXY_DIAGNOSTIC") == "1":
+            headers["X-Diagnostic-Dry-Run"] = "1"
+
+        print(f"   Source: {source_name}")
+        print(f"   URL: {source_url}")
         try:
-            print(f"   Attempt {attempt}/{MAX_RETRIES}...")
             with requests.get(
-                proxy_url,
+                source_url,
                 headers=headers,
                 stream=True,           # stream=True: don't buffer entire response
                 timeout=(30, 3600),    # (connect timeout, read timeout)
             ) as resp:
                 if resp.status_code == 429:
-                    print("   Rate limited by proxy (HTTP 429). Exiting without retry.")
-                    sys.exit(1)
+                    print(f"   {source_name} rate limited the request (HTTP 429).")
+                    continue
                 if resp.status_code != 200:
-                    # The proxy returns a small JSON body that includes the
-                    # upstream NHI status. Read only the first chunk so an
-                    # unexpected large error page is never buffered in memory.
                     first_chunk = next(resp.iter_content(chunk_size=1024), b"")
                     detail = first_chunk.decode("utf-8", errors="replace").strip()
                     if detail:
-                        print(f"   Proxy error detail: {detail[:1000]}")
-                    if resp.status_code == 502:
-                        print("   Proxy could not reach NHI upstream (HTTP 502). Skipping immediate retries.")
-                        sys.exit(1)
-                    raise requests.HTTPError(
-                        f"Proxy returned HTTP {resp.status_code}", response=resp
-                    )
+                        print(f"   Error detail: {detail[:1000]}")
+                    print(f"   {source_name} returned HTTP {resp.status_code}.")
+                    continue
                 total = int(resp.headers.get("Content-Length", 0))
                 downloaded = 0
-                with open(download_path, "wb") as out_file:
+                with open(partial_path, "wb") as out_file:
                     for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
                         if chunk:
                             out_file.write(chunk)
@@ -94,21 +99,18 @@ def process_nhi_data(output_path, exclude_zero=False):
                             if total:
                                 pct = downloaded / total * 100
                                 print(f"\r   Progress: {downloaded // 1024 // 1024} MB / {total // 1024 // 1024} MB ({pct:.1f}%)", end="", flush=True)
+                os.replace(partial_path, download_path)
                 print(f"\n   Downloaded successfully: {downloaded // 1024 // 1024} MB → {download_path}")
-            break  # success — exit retry loop
-
-        except requests.HTTPError as e:
-            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
-            if attempt == MAX_RETRIES:
-                print("Download Error: All retry attempts failed. Exiting.")
-                sys.exit(1)
-            time.sleep(15 * attempt)  # back-off: 15s, 30s
+                downloaded_ok = True
+                break
         except Exception as e:
-            print(f"   Attempt {attempt}/{MAX_RETRIES} failed: {e}")
-            if attempt == MAX_RETRIES:
-                print("Download Error: All retry attempts failed. Exiting.")
-                sys.exit(1)
-            time.sleep(15 * attempt)
+            print(f"   {source_name} failed: {e}")
+            if os.path.exists(partial_path):
+                os.remove(partial_path)
+
+    if not downloaded_ok:
+        print("Download Error: All configured sources failed. Exiting.")
+        sys.exit(1)
 
     print("2. Loading dataset...")
     try:

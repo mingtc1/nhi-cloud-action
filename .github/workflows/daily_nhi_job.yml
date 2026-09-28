@@ -28,6 +28,15 @@ on:
         required: false
         type: string
         default: ''
+      nhi_source_mode:
+        description: 'NHI 下載來源策略'
+        required: false
+        type: choice
+        options:
+          - direct_then_proxy
+          - direct
+          - proxy
+        default: direct_then_proxy
 
 # Prevent concurrent runs (e.g. if a manual trigger overlaps with cron).
 # This ensures only one instance downloads at a time, protecting the
@@ -58,12 +67,13 @@ jobs:
 
       - name: Process NHI Data (Exclude Zero Price)
         if: ${{ inputs.tfda_only != true && inputs.d1_preflight_only != true }}
-        # NHI_PROXY_TOKEN authenticates with the Cloudflare Worker proxy.
-        # The proxy bypasses NHI's geo-restriction that blocks GitHub Actions IPs.
+        # Download directly from the official source first. The authenticated
+        # proxy remains a fallback when the official route is temporarily down.
         env:
           NHI_PROXY_TOKEN: ${{ secrets.NHI_PROXY_TOKEN }}
           NHI_PROXY_URL: ${{ inputs.nhi_proxy_url || 'https://nhi-proxy.mingster.workers.dev/download' }}
           NHI_PROXY_DIAGNOSTIC: ${{ inputs.nhi_dry_run == true && '1' || '0' }}
+          NHI_SOURCE_MODE: ${{ inputs.nhi_source_mode || 'direct_then_proxy' }}
         run: python process_nhi.py --exclude-zero --output cleaned_nhi_data_no_zero.csv
 
       - name: Upload to Cloudflare D1
