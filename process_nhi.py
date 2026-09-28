@@ -80,6 +80,8 @@ def process_nhi_data(output_path, exclude_zero=False):
                         "curl",
                         "--fail-with-body",
                         "--location",
+                        "--ipv4",
+                        "--http1.1",
                         "--connect-timeout", "30",
                         "--max-time", "3600",
                         "--user-agent",
