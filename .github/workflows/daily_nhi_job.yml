@@ -66,6 +66,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Process NHI Data (Exclude Zero Price)
+        id: nhi_process
+        continue-on-error: ${{ inputs.nhi_download_only == true }}
         env:
           NHI_PROXY_TOKEN: ${{ secrets.NHI_PROXY_TOKEN }}
           NHI_PROXY_URL: ${{ inputs.nhi_proxy_url || 'https://nhi-proxy.mingster.workers.dev/download' }}
@@ -75,7 +77,7 @@ jobs:
 
       - name: Upload incremental changes to Cloudflare D1
         id: nhi_upload
-        if: ${{ inputs.nhi_download_only != true }}
+        if: ${{ inputs.nhi_download_only != true && steps.nhi_process.outcome == 'success' }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -101,6 +103,11 @@ jobs:
           elif [ "${{ inputs.nhi_download_only }}" != "true" ]; then
             echo 'The NHI step ended before a report could be generated.' >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: Mark download-only failure as diagnostic warning
+        if: ${{ always() && inputs.nhi_download_only == true && steps.nhi_process.outcome == 'failure' }}
+        shell: bash
+        run: echo "::warning::NHI download diagnostic failed; D1 was not accessed. See the download report above."
 
       - name: Mark deferred NHI synchronization for notification
         if: ${{ always() && (steps.nhi_upload.outputs.status == 'deferred_quota' || steps.nhi_upload.outputs.status == 'deferred_data_anomaly') }}
