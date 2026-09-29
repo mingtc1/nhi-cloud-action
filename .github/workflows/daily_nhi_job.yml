@@ -22,6 +22,11 @@ on:
         required: false
         type: boolean
         default: false
+      ingredient_only:
+        description: '只更新 TFDA 詳細成分 profile；不寫入 NHI 藥品表'
+        required: false
+        type: boolean
+        default: false
       d1_preflight_only:
         description: '只驗證 D1 連線、資料表、索引與用量'
         required: false
@@ -77,7 +82,7 @@ jobs:
 
       - name: Upload incremental changes to Cloudflare D1
         id: nhi_upload
-        if: ${{ inputs.nhi_download_only != true && steps.nhi_process.outcome == 'success' }}
+        if: ${{ inputs.nhi_download_only != true && inputs.ingredient_only != true && steps.nhi_process.outcome == 'success' }}
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -89,7 +94,8 @@ jobs:
         if: >-
           ${{ inputs.nhi_download_only != true &&
               steps.nhi_process.outcome == 'success' &&
-              (steps.nhi_upload.outputs.status == 'success' ||
+              (inputs.ingredient_only == true ||
+               steps.nhi_upload.outputs.status == 'success' ||
                steps.nhi_upload.outputs.status == 'no_changes' ||
                steps.nhi_upload.outputs.status == 'dry_run') }}
         env:
@@ -119,7 +125,7 @@ jobs:
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             cat upload_report.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
-          elif [ "${{ inputs.nhi_download_only }}" != "true" ]; then
+          elif [ "${{ inputs.nhi_download_only }}" != "true" ] && [ "${{ inputs.ingredient_only }}" != "true" ]; then
             echo 'The NHI step ended before a report could be generated.' >> "$GITHUB_STEP_SUMMARY"
           fi
           if [ -f ingredient_profile_report.json ]; then
