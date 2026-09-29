@@ -102,10 +102,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           D1_DATABASE_ID: ${{ secrets.D1_DATABASE_ID }}
-          # The explicit ingredient-only mode is also the controlled bootstrap
-          # path. Its measured initial estimate is about 20k writes; normal
-          # scheduled runs retain the 10k unknown-usage cap.
-          D1_UNKNOWN_USAGE_WRITE_CAP: ${{ inputs.ingredient_only == true && '25000' || '10000' }}
+          D1_UNKNOWN_USAGE_WRITE_CAP: '10000'
         run: >-
           python sync_ingredient_profiles.py
           --nhi-csv cleaned_nhi_data_no_zero.csv

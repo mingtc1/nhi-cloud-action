@@ -27,7 +27,7 @@ Override these values with `D1_READ_PAUSE_THRESHOLD`, `D1_WRITE_PAUSE_THRESHOLD`
 
 - Normal manual run: download, compare, and write only safe changes.
 - `nhi_dry_run=true`: download and compare, but do not create synchronization state, write drug data, or run TFDA.
-- `ingredient_only=true`: process NHI only as the active-license input, then update TFDA ingredient profiles without writing the NHI drug table or running the supply/recall sync. This explicit bootstrap path permits up to 25,000 estimated writes when account analytics are unavailable; scheduled runs retain the 10,000-row unknown-usage cap and every run retains the 70,000-row operating threshold.
+- `ingredient_only=true`: process NHI only as the active-license input, then update TFDA ingredient profiles without writing the NHI drug table or running the supply/recall sync. After the initial profile bootstrap, this mode uses the same 10,000-row unknown-usage cap as scheduled runs; every run also retains the 70,000-row operating threshold.
 - `d1_preflight_only=true`: validate D1 connectivity, required tables, indexes, latest sync log, and account usage without downloading NHI data or writing D1.
 - `tfda_only=true`: skip NHI and run only the protected TFDA synchronization.
 
