@@ -34,3 +34,15 @@ CREATE INDEX idx_drug_code ON nhi_drugs(藥品代號);
 CREATE INDEX idx_license ON nhi_drugs(許可證字號);
 CREATE INDEX idx_atc ON nhi_drugs(ATC代碼);
 CREATE INDEX idx_group_name ON nhi_drugs(分類分組名稱);
+
+-- TFDA detailed prescription ingredients are reduced on GitHub to one compact
+-- comparison profile per NHI license.  The TEXT primary key supplies the only
+-- index needed by the substitute APIs.
+CREATE TABLE drug_ingredient_profiles (
+    license_no TEXT PRIMARY KEY,
+    profile_hash TEXT NOT NULL,
+    components_json TEXT NOT NULL,
+    component_count INTEGER NOT NULL,
+    profile_status TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
