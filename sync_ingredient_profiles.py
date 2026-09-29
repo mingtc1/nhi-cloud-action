@@ -120,6 +120,20 @@ def comparison_signature(component: dict[str, str]) -> str:
     return "|".join((identity, canonical_amount, unit))
 
 
+def profile_component_signature(component: dict[str, str]) -> str:
+    """Return a stable signature even when TFDA omitted a structured amount.
+
+    Partial profiles are never used to decide Level 1 versus Level 2, but they
+    still need a deterministic hash so incremental synchronization can detect
+    later source corrections without crashing the entire job.
+    """
+    if (component["code"] or component["name"]) and component["amount"] and component["unit"]:
+        return comparison_signature(component)
+    return "PARTIAL|" + json.dumps(
+        component, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+
+
 def build_profiles(
     nhi_csv_path: str,
     dataset_zip_path: str,
@@ -163,9 +177,7 @@ def build_profiles(
         seen: set[str] = set()
         for row in rows:
             component, comparable = component_from_row(row)
-            signature = comparison_signature(component) if comparable else json.dumps(
-                component, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
+            signature = profile_component_signature(component)
             if signature in seen:
                 continue
             seen.add(signature)
@@ -174,7 +186,7 @@ def build_profiles(
         components.sort(key=lambda item: (
             item["code"] or item["name"], item["amount"], item["unit"], item["label"], item["description"]
         ))
-        signatures = sorted(comparison_signature(item) for item in components)
+        signatures = sorted(profile_component_signature(item) for item in components)
         profile_hash = hashlib.sha256("\n".join(signatures).encode("utf-8")).hexdigest()
         status = "ready" if components and all_comparable else "partial"
         ready_count += status == "ready"

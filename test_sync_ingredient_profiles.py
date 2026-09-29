@@ -71,6 +71,27 @@ class IngredientProfileTests(unittest.TestCase):
         })
         self.assertFalse(comparable)
         self.assertEqual(component["description"], "EQUIVALENT TO 125 MG")
+        self.assertTrue(profiles.profile_component_signature(component).startswith("PARTIAL|"))
+
+    def test_partial_profile_builds_without_numeric_conversion(self):
+        nhi_path = self.tmpdir / "nhi.csv"
+        with nhi_path.open("w", encoding="utf-8-sig", newline="") as target:
+            writer = csv.DictWriter(target, fieldnames=["許可證字號"])
+            writer.writeheader()
+            writer.writerow({"許可證字號": "衛部藥輸字第000001號"})
+
+        csv_path = self.tmpdir / "tfda.csv"
+        with csv_path.open("w", encoding="utf-8-sig", newline="") as target:
+            writer = csv.writer(target)
+            writer.writerow(["許可證字號", "處方標示", "成分名稱", "成分代碼", "含量描述", "含量", "含量單位"])
+            writer.writerow(["衛部藥輸字第000001號", "Each capsule contains", "A", "1", "equivalent to 1 mg", "", "MG"])
+        zip_path = self.tmpdir / "tfda.zip"
+        with zipfile.ZipFile(zip_path, "w") as archive:
+            archive.write(csv_path, arcname="43_2.csv")
+
+        result, report = profiles.build_profiles(str(nhi_path), str(zip_path))
+        self.assertEqual(result["衛部藥輸字第000001號"]["profile_status"], "partial")
+        self.assertEqual(report["partial_profile_count"], 1)
 
     def test_diff_detects_only_changed_profiles(self):
         old = {
