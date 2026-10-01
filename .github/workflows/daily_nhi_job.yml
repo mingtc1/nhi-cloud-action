@@ -136,6 +136,17 @@ jobs:
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Publish update events without D1 writes
+        if: ${{ always() && steps.nhi_process.outcome != 'skipped' && inputs.nhi_download_only != true && inputs.d1_preflight_only != true }}
+        shell: bash
+        env:
+          TFDA_SYNC_TOKEN: ${{ secrets.TFDA_SYNC_TOKEN }}
+        run: |
+          args=()
+          if [ "${{ inputs.ingredient_only }}" != "true" ]; then args+=(--nhi); fi
+          if [ "${{ steps.ingredient_upload.outcome }}" != "skipped" ]; then args+=(--ingredients); fi
+          python publish_sync_events.py "${args[@]}"
+
       - name: Mark download-only failure as diagnostic warning
         if: ${{ always() && inputs.nhi_download_only == true && steps.nhi_process.outcome == 'failure' }}
         shell: bash
